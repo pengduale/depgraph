@@ -1,75 +1,127 @@
-"""Render dependency graphs as interactive SVG diagrams."""
+"""SVG renderer for dependency graphs."""
 
-from typing import Dict, Set
-import math
+from __future__ import annotations
+from typing import Dict, List, Optional, Tuple
 
-SVG_TEMPLATE = """<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-  <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#555" />
-    </marker>
-  </defs>
-  <style>
-    .node rect {{ fill: #4a90d9; rx: 6; stroke: #2c5f8a; stroke-width: 1.5; cursor: pointer; }}
-    .node rect:hover {{ fill: #357abd; }}
-    .node text {{ fill: white; font-family: monospace; font-size: 12px; pointer-events: none; }}
-    .edge {{ stroke: #555; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }}
-  </style>
-{edges}
-{nodes}
-</svg>"""
+from depgraph.layout import get_layout, NodePos
 
 
-def _layout_nodes(modules, width: int, height: int):
-    """Arrange nodes in a circle."""
-    cx, cy = width / 2, height / 2
-    radius = min(width, height) * 0.38
-    positions = {}
-    n = len(modules)
-    for i, name in enumerate(sorted(modules)):
-        angle = 2 * math.pi * i / max(n, 1) - math.pi / 2
-        x = cx + radius * math.cos(angle)
-        y = cy + radius * math.sin(angle)
-        positions[name] = (x, y)
-    return positions
+DEFAULT_NODE_WIDTH = 140
+DEFAULT_NODE_HEIGHT = 36
+PADDING = 60
 
 
-def render_svg(graph: Dict[str, Set[str]], width: int = 800, height: int = 600) -> str:
-    """Render the dependency graph as an SVG string."""
-    modules = list(graph.keys())
-    if not modules:
-        return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><text x="20" y="40" font-family="monospace">No modules found.</text></svg>'
+def _layout_nodes(
+    graph: Dict[str, List[str]],
+    strategy: str = "hierarchical",
+    spacing_x: float = 200.0,
+    spacing_y: float = 120.0,
+) -> NodePos:
+    """Compute node positions using the specified layout strategy."""
+    return get_layout(strategy, graph, spacing_x=spacing_x, spacing_y=spacing_y)
 
-    positions = _layout_nodes(modules, width, height)
-    node_w, node_h = 120, 32
 
-    edges_svg = []
+def _arrow_marker() -> str:
+    return (
+        '<defs><marker id="arrow" markerWidth="10" markerHeight="7" '
+        'refX="10" refY="3.5" orient="auto">'
+        '<polygon points="0 0, 10 3.5, 0 7" fill="#555" /></marker></defs>'
+    )
+
+
+def _render_edge(x1: float, y1: float, x2: float, y2: float, css_class: str = "edge") -> str:
+    return (
+        f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+        f'class="{css_class}" marker-end="url(#arrow)" />'
+    )
+
+
+def _render_node(
+    node: str,
+    x: float,
+    y: float,
+    css_class: str = "node",
+    width: int = DEFAULT_NODE_WIDTH,
+    height: int = DEFAULT_NODE_HEIGHT,
+) -> str:
+    rx, ry = x - width / 2, y - height / 2
+    label = node if len(node) <= 18 else node[:15] + "..."
+    return (
+        f'<g class="{css_class}" data-node="{node}">'
+        f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{width}" height="{height}" rx="6" />'
+        f'<text x="{x:.1f}" y="{y + 5:.1f}" text-anchor="middle">{label}</text>'
+        f"</g>"
+    )
+
+
+def render_svg(
+    graph: Dict[str, List[str]],
+    highlighted: Optional[Dict[str, str]] = None,
+    layout: str = "hierarchical",
+    width: int = 900,
+    height: int = 600,
+) -> str:
+    """Render the dependency graph as an SVG string.
+
+    Args:
+        graph: Adjacency list {module: [dependency, ...]}.
+        highlighted: Optional map of {node: css_class} for highlighting.
+        layout: Layout strategy name ('hierarchical' or 'circular').
+        width: SVG canvas width in pixels.
+        height: SVG canvas height in pixels.
+
+    Returns:
+        SVG document as a string.
+    """
+    positions = _layout_nodes(graph, strategy=layout)
+    highlighted = highlighted or {}
+
+    # Offset so all coordinates are positive with padding
+    if positions:
+        min_x = min(x for x, _ in positions.values())
+        min_y = min(y for _, y in positions.values())
+        offset_x = -min_x + PADDING + DEFAULT_NODE_WIDTH / 2
+        offset_y = -min_y + PADDING + DEFAULT_NODE_HEIGHT / 2
+    else:
+        offset_x = offset_y = PADDING
+
+    lines: List[str] = []
+    lines.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">'
+    )
+    lines.append(_arrow_marker())
+    lines.append(
+        "<style>"
+        ".node rect{fill:#4a90d9;stroke:#2c5f8a;stroke-width:1.5px}"
+        ".node text{fill:#fff;font:13px sans-serif}"
+        ".node.highlight-focus rect{fill:#e07b39}"
+        ".node.highlight-ancestor rect{fill:#7db87d}"
+        ".node.highlight-descendant rect{fill:#b07dc8}"
+        ".edge{stroke:#555;stroke-width:1.5px;fill:none}"
+        "</style>"
+    )
+
+    # Draw edges
     for src, deps in graph.items():
         if src not in positions:
             continue
-        x1, y1 = positions[src]
+        sx, sy = positions[src]
+        sx += offset_x
+        sy += offset_y
         for dep in deps:
-            top = dep.split(".")[0]
-            target = next((m for m in positions if m == top or m.startswith(top + ".")), None)
-            if target:
-                x2, y2 = positions[target]
-                edges_svg.append(
-                    f'  <line class="edge" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" />'
-                )
+            if dep not in positions:
+                continue
+            dx, dy = positions[dep]
+            dx += offset_x
+            dy += offset_y
+            lines.append(_render_edge(sx, sy, dx, dy))
 
-    nodes_svg = []
-    for name, (x, y) in positions.items():
-        label = name if len(name) <= 14 else "..." + name[-11:]
-        rx, ry = x - node_w / 2, y - node_h / 2
-        nodes_svg.append(
-            f'  <g class="node"><title>{name}</title>'
-            f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{node_w}" height="{node_h}" rx="6"/>'
-            f'<text x="{x:.1f}" y="{y + 5:.1f}" text-anchor="middle">{label}</text></g>'
-        )
+    # Draw nodes
+    for node, (x, y) in positions.items():
+        cx, cy = x + offset_x, y + offset_y
+        css = highlighted.get(node, "node")
+        lines.append(_render_node(node, cx, cy, css_class=css))
 
-    return SVG_TEMPLATE.format(
-        width=width,
-        height=height,
-        edges="\n".join(edges_svg),
-        nodes="\n".join(nodes_svg),
-    )
+    lines.append("</svg>")
+    return "\n".join(lines)
