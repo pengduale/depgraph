@@ -52,6 +52,26 @@ def test_main_json_output(tmp_project: Path, capsys):
     assert all("members" in entry for entry in data)
 
 
+def test_main_json_size_matches_members(tmp_project: Path, capsys):
+    """Verify that the reported size equals the actual number of members."""
+    main([str(tmp_project), "--depth", "1", "--json"])
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    for entry in data:
+        assert entry["size"] == len(entry["members"]), (
+            f"Cluster '{entry['cluster']}' reports size {entry['size']} "
+            f"but has {len(entry['members'])} members"
+        )
+
+
+def test_main_min_size_filters_clusters(tmp_project: Path, capsys):
+    """Clusters smaller than --min-size should be excluded from output."""
+    main([str(tmp_project), "--depth", "1", "--json", "--min-size", "2"])
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert all(entry["size"] >= 2 for entry in data)
+
+
 def test_main_no_files_exits(tmp_path: Path):
     empty = tmp_path / "empty"
     empty.mkdir()
