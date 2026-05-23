@@ -1,83 +1,85 @@
 """Command-line interface for depgraph."""
 
+from __future__ import annotations
+
 import argparse
-import os
 import sys
 from pathlib import Path
+from typing import List
 
-from depgraph.parser import build_dependency_graph
+from depgraph.parser import extract_imports, build_dependency_graph
 from depgraph.renderer import render_svg
+from depgraph.exporter import save_export
+from depgraph.filter import (
+    filter_by_prefix,
+    filter_by_depth,
+    exclude_nodes,
+    remove_isolated_nodes,
+)
 
 
-def parse_args(argv=None):
+def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="depgraph",
-        description="Visualize dependency graphs for Python projects as interactive SVG diagrams.",
+        description="Visualize Python project dependency graphs.",
     )
-    parser.add_argument(
-        "path",
-        nargs="?",
-        default=".",
-        help="Path to the Python project or file (default: current directory)",
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="depgraph.svg",
-        help="Output SVG file path (default: depgraph.svg)",
-    )
-    parser.add_argument(
-        "--exclude",
-        nargs="*",
-        default=[],
-        metavar="MODULE",
-        help="Module names to exclude from the graph",
-    )
-    parser.add_argument(
-        "--no-open",
-        action="store_true",
-        help="Do not open the SVG file after generation",
-    )
+    parser.add_argument("path", help="File or directory to analyse")
+    parser.add_argument("-o", "--output", default="depgraph.svg", help="Output file path")
+    parser.add_argument("--format", choices=["svg", "json", "dot"], default="svg")
+    parser.add_argument("--prefix", default=None, help="Filter nodes by module prefix")
+    parser.add_argument("--exclude", nargs="*", default=[], metavar="MODULE",
+                        help="Modules to exclude from the graph")
+    parser.add_argument("--depth", type=int, default=None, metavar="N",
+                        help="Limit graph depth from a root node (requires --root)")
+    parser.add_argument("--root", default=None,
+                        help="Root module for depth-limited traversal")
+    parser.add_argument("--no-isolated", action="store_true",
+                        help="Remove isolated (unconnected) nodes")
     return parser.parse_args(argv)
 
 
-def collect_python_files(root):
-    """Recursively collect all .py files under root."""
-    root = Path(root)
-    if root.is_file() and root.suffix == ".py":
-        return [root]
-    return sorted(root.rglob("*.py"))
+def collect_python_files(path: str) -> List[Path]:
+    p = Path(path)
+    if p.is_file() and p.suffix == ".py":
+        return [p]
+    if p.is_dir():
+        return sorted(p.rglob("*.py"))
+    return []
 
 
-def main(argv=None):
+def main(argv: List[str] | None = None) -> int:
     args = parse_args(argv)
-    target = Path(args.path)
+    files = collect_python_files(args.path)
 
-    if not target.exists():
-        print(f"error: path '{target}' does not exist.", file=sys.stderr)
+    if not files:
+        print(f"No Python files found at: {args.path}", file=sys.stderr)
         return 1
 
-    py_files = collect_python_files(target)
-    if not py_files:
-        print(f"No Python files found in '{target}'.", file=sys.stderr)
-        return 1
+    imports_map = {str(f): extract_imports(f.read_text()) for f in files}
+    graph = build_dependency_graph(imports_map)
 
-    print(f"Found {len(py_files)} Python file(s). Building dependency graph...")
+    if args.prefix:
+        graph = filter_by_prefix(graph, args.prefix)
 
-    graph = build_dependency_graph(py_files, exclude=set(args.exclude))
+    if args.exclude:
+        graph = exclude_nodes(graph, args.exclude)
 
-    if not graph:
-        print("No dependencies found.")
-        return 0
+    if args.depth is not None:
+        if not args.root:
+            print("--depth requires --root to be specified.", file=sys.stderr)
+            return 1
+        graph = filter_by_depth(graph, args.root, args.depth)
 
-    svg_content = render_svg(graph)
-    output_path = Path(args.output)
-    output_path.write_text(svg_content, encoding="utf-8")
-    print(f"SVG written to '{output_path}'.")
+    if args.no_isolated:
+        graph = remove_isolated_nodes(graph)
 
-    if not args.no_open:
-        import webbrowser
-        webbrowser.open(output_path.resolve().as_uri())
+    if args.format == "svg":
+        svg = render_svg(graph)
+        Path(args.output).write_text(svg)
+    else:
+        save_export(graph, args.output, fmt=args.format)
 
+    print(f"Output written to {args.output}")
     return 0
 
 
